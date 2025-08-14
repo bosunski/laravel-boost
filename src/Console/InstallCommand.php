@@ -34,6 +34,13 @@ class InstallCommand extends Command
 {
     use Colors;
 
+    protected $signature = 'boost:install
+        {--features= : Comma-separated list: mcp_server,herd_mcp,ai_guidelines}
+        {--agents= : Comma-separated agent names: copilot,cursor,phpstorm,claudecode}
+        {--mcp-clients= : Comma-separated MCP client names: vscode,cursor,phpstorm,claudecode}
+        {--enforce-tests=auto : yes|no|auto}
+        {--style-guidelines= : yes|no}';
+
     private CodeEnvironmentsDetector $codeEnvironmentsDetector;
 
     private Herd $herd;
@@ -62,6 +69,21 @@ class InstallCommand extends Command
 
     private string $redCross;
 
+    private bool $nonInteractive = false;
+
+    /** @var array<int, string>|null */
+    private ?array $optFeatures = null;
+
+    /** @var array<int, string>|null */
+    private ?array $optAgents = null;
+
+    /** @var array<int, string>|null */
+    private ?array $optMcpClients = null;
+
+    private ?string $optEnforceTests = null;
+
+    private ?bool $optStyleGuidelines = null;
+
     public function handle(CodeEnvironmentsDetector $codeEnvironmentsDetector, Herd $herd, Terminal $terminal): void
     {
         $this->bootstrap($codeEnvironmentsDetector, $herd, $terminal);
@@ -87,6 +109,8 @@ class InstallCommand extends Command
         $this->selectedTargetMcpClient = collect();
 
         $this->projectName = config('app.name');
+
+    $this->parseCommandOptions();
     }
 
     private function displayBoostHeader(): void
@@ -118,7 +142,11 @@ class InstallCommand extends Command
     private function collectInstallationPreferences(): void
     {
         $this->selectedBoostFeatures = $this->selectBoostFeatures();
-        $this->enforceTests = $this->determineTestEnforcement(ask: false);
+        $this->enforceTests = match ($this->optEnforceTests) {
+            'yes' => true,
+            'no' => false,
+            default => $this->determineTestEnforcement(ask: false),
+        };
         $this->selectedTargetMcpClient = $this->selectTargetMcpClients();
         $this->selectedTargetAgents = $this->selectTargetAgents();
     }
@@ -228,7 +256,20 @@ class InstallCommand extends Command
 
         if ($this->herd->isMcpAvailable()) {
             $installOptions['herd_mcp'] = 'Herd MCP Server';
+        }
 
+        // If provided via option, use it
+        if ($this->optFeatures !== null) {
+            return $this->filterKnownFeatures($this->optFeatures, array_keys($installOptions));
+        }
+
+        // In non-interactive mode, just use defaults
+        if ($this->nonInteractive) {
+            return collect($defaultInstallOptions);
+        }
+
+        // Interactive prompt
+        if ($this->herd->isMcpAvailable()) {
             return collect(multiselect(
                 label: 'What do you want to install?',
                 options: $installOptions,
@@ -237,7 +278,7 @@ class InstallCommand extends Command
             ));
         }
 
-        return collect(['mcp_server', 'ai_guidelines']);
+        return collect($defaultInstallOptions);
     }
 
     /**
@@ -337,21 +378,29 @@ class InstallCommand extends Command
             }
         }
 
-        $selectedClasses = collect(multiselect(
-            label: $label,
-            options: $options->toArray(),
-            default: array_unique($detectedClasses),
-            scroll: $config['scroll'],
-            required: $config['required'],
-            hint: empty($detectedClasses) ? '' : sprintf('Auto-detected %s for you',
-                Arr::join(array_map(function ($className) use ($availableEnvironments, $config) {
-                    $env = $availableEnvironments->first(fn ($env) => get_class($env) === $className);
-                    $displayMethod = $config['displayMethod'];
+        // Use explicit options if provided
+        $namesFromOption = $contractClass === Agent::class ? $this->optAgents : ($contractClass === McpClient::class ? $this->optMcpClients : null);
+        if (is_array($namesFromOption)) {
+            $selectedClasses = $this->mapNamesToEnvironmentClasses($namesFromOption, $availableEnvironments->values());
+        } elseif ($this->nonInteractive) {
+            $selectedClasses = collect(array_unique($detectedClasses));
+        } else {
+            $selectedClasses = collect(multiselect(
+                label: $label,
+                options: $options->toArray(),
+                default: array_unique($detectedClasses),
+                scroll: $config['scroll'],
+                required: $config['required'],
+                hint: empty($detectedClasses) ? '' : sprintf('Auto-detected %s for you',
+                    Arr::join(array_map(function ($className) use ($availableEnvironments, $config) {
+                        $env = $availableEnvironments->first(fn ($env) => get_class($env) === $className);
+                        $displayMethod = $config['displayMethod'];
 
-                    return $env->{$displayMethod}();
-                }, $detectedClasses), ', ', ' & ')
-            )
-        ))->sort();
+                        return $env->{$displayMethod}();
+                    }, $detectedClasses), ', ', ' & ')
+                )
+            ))->sort();
+        }
 
         return $selectedClasses->map(fn ($className) => $availableEnvironments->first(fn ($env) => get_class($env) === $className));
     }
@@ -424,7 +473,7 @@ class InstallCommand extends Command
 
     private function shouldInstallStyleGuidelines(): bool
     {
-        return false;
+    return (bool) ($this->optStyleGuidelines ?? false);
     }
 
     private function shouldInstallMcp(): bool
@@ -444,7 +493,7 @@ class InstallCommand extends Command
         }
 
         if ($this->selectedTargetMcpClient->isEmpty()) {
-            $this->info('No agents selected for guideline installation.');
+            $this->info(' No IDEs selected for MCP installation.');
 
             return;
         }
@@ -533,5 +582,77 @@ class InstallCommand extends Command
 
         /** @phpstan-ignore-next-line  */
         return $actuallyUsing && is_dir(base_path('lang'));
+    }
+
+    private function parseCommandOptions(): void
+    {
+        $this->nonInteractive = ! $this->input->isInteractive();
+
+        $this->optFeatures = $this->explodeCsvOption($this->option('features'));
+        $this->optAgents = $this->explodeCsvOption($this->option('agents'));
+        $this->optMcpClients = $this->explodeCsvOption($this->option('mcp-clients'));
+
+        $enforce = $this->option('enforce-tests');
+        if (is_string($enforce)) {
+            $enforce = strtolower($enforce);
+            $this->optEnforceTests = in_array($enforce, ['yes', 'no', 'auto'], true) ? $enforce : null;
+        }
+
+        $style = $this->option('style-guidelines');
+        if (is_string($style)) {
+            $style = strtolower(trim($style));
+            if (in_array($style, ['yes', 'true', '1'], true)) {
+                $this->optStyleGuidelines = true;
+            } elseif (in_array($style, ['no', 'false', '0'], true)) {
+                $this->optStyleGuidelines = false;
+            }
+        }
+    }
+
+    /**
+     * @return array<int, string>|null
+     */
+    private function explodeCsvOption($value): ?array
+    {
+        if (! is_string($value) || trim($value) === '') {
+            return null;
+        }
+
+        return array_values(array_filter(array_map(fn ($v) => strtolower(trim($v)), explode(',', $value)), fn ($v) => $v !== ''));
+    }
+
+    private function filterKnownFeatures(array $requested, array $allowed): Collection
+    {
+        $allowed = array_map('strtolower', $allowed);
+        $filtered = collect($requested)->filter(fn ($f) => in_array($f, $allowed, true))->values();
+
+        return $filtered->isEmpty() ? collect($allowed ? ['mcp_server', 'ai_guidelines'] : []) : $filtered;
+    }
+
+    /**
+     * @param Collection<int, CodeEnvironment> $availableEnvironments
+     * @return Collection<int, class-string>
+     */
+    private function mapNamesToEnvironmentClasses(array $names, Collection $availableEnvironments): Collection
+    {
+        $normalized = collect($names)->map(fn ($n) => strtolower(trim($n)))->filter();
+
+        if ($normalized->contains('all')) {
+            return $availableEnvironments->map(fn ($env) => get_class($env));
+        }
+        if ($normalized->contains('none')) {
+            return collect();
+        }
+
+        return $availableEnvironments->filter(function (CodeEnvironment $env) use ($normalized) {
+            $candidates = [
+                strtolower($env->name()),
+                strtolower($env->displayName()),
+                strtolower((new \ReflectionClass($env))->getShortName()),
+                strtolower(get_class($env)),
+            ];
+
+            return $normalized->intersect($candidates)->isNotEmpty();
+        })->map(fn ($env) => get_class($env))->values();
     }
 }
