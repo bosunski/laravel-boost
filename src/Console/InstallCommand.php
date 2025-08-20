@@ -39,8 +39,8 @@ class InstallCommand extends Command
         {--features= : Comma-separated list: mcp_server,herd_mcp,ai_guidelines}
         {--agents= : Comma-separated agent names: copilot,cursor,phpstorm,claudecode}
         {--mcp-clients= : Comma-separated MCP client names: vscode,cursor,phpstorm,claudecode}
-        {--enforce-tests=auto : yes|no|auto}
-        {--style-guidelines= : yes|no}';
+        {--enforce-tests}
+        {--style-guidelines}';
 
     private CodeEnvironmentsDetector $codeEnvironmentsDetector;
 
@@ -82,10 +82,6 @@ class InstallCommand extends Command
 
     /** @var array<int, string>|null */
     private ?array $optMcpClients = null;
-
-    private ?string $optEnforceTests = null;
-
-    private ?bool $optStyleGuidelines = null;
 
     public function handle(CodeEnvironmentsDetector $codeEnvironmentsDetector, Herd $herd, Terminal $terminal): void
     {
@@ -145,11 +141,7 @@ class InstallCommand extends Command
     private function collectInstallationPreferences(): void
     {
         $this->selectedBoostFeatures = $this->selectBoostFeatures();
-        $this->enforceTests = match ($this->optEnforceTests) {
-            'yes' => true,
-            'no' => false,
-            default => $this->determineTestEnforcement(ask: false),
-        };
+        $this->enforceTests = $this->option('enforce-tests') ?? $this->determineTestEnforcement(ask: false);
         $this->selectedTargetMcpClient = $this->selectTargetMcpClients();
         $this->selectedTargetAgents = $this->selectTargetAgents();
         $this->enforceTests = $this->determineTestEnforcement(ask: false);
@@ -270,17 +262,10 @@ class InstallCommand extends Command
             $installOptions['herd_mcp'] = 'Herd MCP Server';
         }
 
-        // If provided via option, use it
         if ($this->optFeatures !== null) {
             return $this->filterKnownFeatures($this->optFeatures, array_keys($installOptions));
         }
 
-        // In non-interactive mode, just use defaults
-        if ($this->nonInteractive) {
-            return collect($defaultInstallOptions);
-        }
-
-        // Interactive prompt
         if ($this->herd->isMcpAvailable()) {
             return collect(multiselect(
                 label: 'What do you want to install?',
@@ -394,8 +379,6 @@ class InstallCommand extends Command
         $namesFromOption = $contractClass === Agent::class ? $this->optAgents : ($contractClass === McpClient::class ? $this->optMcpClients : null);
         if (is_array($namesFromOption)) {
             $selectedClasses = $this->mapNamesToEnvironmentClasses($namesFromOption, $availableEnvironments->values());
-        } elseif ($this->nonInteractive) {
-            $selectedClasses = collect(array_unique($detectedClasses));
         } else {
             $selectedClasses = collect(multiselect(
                 label: $label,
@@ -485,7 +468,7 @@ class InstallCommand extends Command
 
     private function shouldInstallStyleGuidelines(): bool
     {
-    return (bool) ($this->optStyleGuidelines ?? false);
+    return (bool) ($this->option('style-guidelines') ?? false);
     }
 
     private function shouldInstallMcp(): bool
@@ -505,7 +488,7 @@ class InstallCommand extends Command
         }
 
         if ($this->selectedTargetMcpClient->isEmpty()) {
-            $this->info(' No IDEs selected for MCP installation.');
+            $this->info('No agents selected for guideline installation.');
 
             return;
         }
@@ -603,22 +586,6 @@ class InstallCommand extends Command
         $this->optFeatures = $this->explodeCsvOption($this->option('features'));
         $this->optAgents = $this->explodeCsvOption($this->option('agents'));
         $this->optMcpClients = $this->explodeCsvOption($this->option('mcp-clients'));
-
-        $enforce = $this->option('enforce-tests');
-        if (is_string($enforce)) {
-            $enforce = strtolower($enforce);
-            $this->optEnforceTests = in_array($enforce, ['yes', 'no', 'auto'], true) ? $enforce : null;
-        }
-
-        $style = $this->option('style-guidelines');
-        if (is_string($style)) {
-            $style = strtolower(trim($style));
-            if (in_array($style, ['yes', 'true', '1'], true)) {
-                $this->optStyleGuidelines = true;
-            } elseif (in_array($style, ['no', 'false', '0'], true)) {
-                $this->optStyleGuidelines = false;
-            }
-        }
     }
 
     /**
