@@ -23,6 +23,7 @@ use Laravel\Prompts\Concerns\Colors;
 use Laravel\Prompts\Terminal;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Finder\Finder;
+use Symfony\Component\Process\Process;
 
 use function Laravel\Prompts\intro;
 use function Laravel\Prompts\multiselect;
@@ -64,6 +65,8 @@ class InstallCommand extends Command
     private array $projectInstalledCodeEnvironments = [];
 
     private bool $enforceTests = true;
+
+    const MIN_TEST_COUNT = 6;
 
     private string $greenTick;
 
@@ -149,6 +152,7 @@ class InstallCommand extends Command
         };
         $this->selectedTargetMcpClient = $this->selectTargetMcpClients();
         $this->selectedTargetAgents = $this->selectTargetAgents();
+        $this->enforceTests = $this->determineTestEnforcement(ask: false);
     }
 
     private function performInstallation(): void
@@ -226,11 +230,19 @@ class InstallCommand extends Command
      */
     protected function determineTestEnforcement(bool $ask = true): bool
     {
-        $hasMinimumTests = Finder::create()
-            ->in(base_path('tests'))
-            ->files()
-            ->name('*.php')
-            ->count() > 6;
+        $hasMinimumTests = false;
+
+        if (file_exists(base_path('vendor/bin/phpunit'))) {
+            $process = new Process([PHP_BINARY, 'artisan', 'test', '--list-tests'], base_path());
+            $process->run();
+
+            /** Count the number of tests - they'll always have :: between the filename and test name */
+            $hasMinimumTests = Str::of($process->getOutput())
+                ->trim()
+                ->explode("\n")
+                ->filter(fn ($line) => str_contains($line, '::'))
+                ->count() >= self::MIN_TEST_COUNT;
+        }
 
         if (! $hasMinimumTests && $ask) {
             $hasMinimumTests = select(
