@@ -26,10 +26,16 @@ Laravel Boost can be installed via Composer:
 composer require laravel/boost --dev
 ```
 
-Next, install the MCP server and coding guidelines:
+Next, install the MCP server and coding guidelines interactively:
 
 ```bash
 php artisan boost:install
+```
+
+OR non-interactively:
+
+```bash
+php artisan boost:install --agents=copilot,cursor --features=mcp_server,ai_guidelines --mcp-clients=vscode,cursor --style-guidelines --enforce-tests
 ```
 
 Once Laravel Boost has been installed, you're ready to start coding with Cursor, Claude Code, or your AI agent of choice.
